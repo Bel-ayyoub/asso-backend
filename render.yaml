@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: asso-backend
+    env: python
+    region: frankfurt
+    buildCommand: "" 
+    startCommand: gunicorn app:app
+    plan: free
+    autoDeploy: true
