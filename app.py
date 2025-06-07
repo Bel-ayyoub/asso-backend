@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 from werkzeug.utils import secure_filename
@@ -17,14 +17,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Flask config
 app = Flask(__name__)
 CORS(app)
-UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['SECRET_KEY'] = 'your-secret-key'
-
-# Ensure upload folder exists
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
 # Helpers
 def allowed_file(filename):
@@ -54,7 +48,7 @@ def token_required(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
-# Upload image
+# Upload image to Supabase storage bucket 'photos'
 @app.route('/api/upload', methods=['POST'])
 @token_required
 def upload_file(current_user):
@@ -68,12 +62,27 @@ def upload_file(current_user):
     if file and allowed_file(file.filename):
         filename = secure_filename(file.filename)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
-        filename = timestamp + filename
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
+        final_filename = f"{timestamp}{filename}"
+        path_in_bucket = f"images/{final_filename}"
+        file_bytes = file.read()
+
+        upload_response = supabase.storage.from_('photos').upload(
+            path=path_in_bucket,
+            file=file_bytes,
+            file_options={
+                "content-type": file.mimetype,
+                "upsert": True
+            }
+        )
+
+        if upload_response.get('error'):
+            return jsonify({'error': 'Upload to Supabase failed'}), 500
+
+        public_url = supabase.storage.from_('photos').get_public_url(path_in_bucket)
 
         metadata = {
-            'filename': filename,
+            'filename': final_filename,
+            'url': public_url,
             'location': request.form.get('location', ''),
             'bio': request.form.get('bio', ''),
             'upload_date': datetime.now().isoformat(),
@@ -82,10 +91,7 @@ def upload_file(current_user):
 
         supabase.table("images").insert(metadata).execute()
 
-        return jsonify({
-            'message': 'File uploaded successfully',
-            'metadata': metadata
-        }), 200
+        return jsonify({'message': 'Upload successful', 'metadata': metadata}), 200
 
     return jsonify({'error': 'Invalid file type'}), 400
 
@@ -99,17 +105,7 @@ def get_images():
         result = supabase.table('images').select('*').execute()
     return jsonify(result.data), 200
 
-# Serve image file
-@app.route('/api/image/<filename>', methods=['GET'])
-def get_image(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-# Home
-@app.route('/')
-def index():
-    return jsonify({'message': 'Server is running'}), 200
-
-# Login with Supabase
+# Login endpoint
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -124,8 +120,10 @@ def login():
     else:
         return jsonify({'message': 'اسم المستخدم أو كلمة المرور غير صحيحة'}), 401
 
-def create_app():
-    return app
+# Root
+@app.route('/')
+def index():
+    return jsonify({'message': 'Server is running'}), 200
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
