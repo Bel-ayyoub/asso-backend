@@ -16,7 +16,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Flask config
 app = Flask(__name__)
 CORS(app)
-app.config['SECRET_KEY'] = os.getenv("SECRET_KEY", "your-secret-key")
+app.config['SECRET_KEY'] = os.getenv("SECRET_KEY")
 
 # Helpers
 def allowed_file(filename):
