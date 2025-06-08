@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import os
 from werkzeug.utils import secure_filename
@@ -12,14 +12,14 @@ from supabase import create_client, Client
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SECRET_KEY_FROM_ENV = os.getenv("SECRET_KEY") # NEW
+SECRET_KEY_FROM_ENV = os.getenv("SECRET_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Flask config
 app = Flask(__name__)
 CORS(app)
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-app.config['SECRET_KEY'] = SECRET_KEY_FROM_ENV # CHANGED
+app.config['SECRET_KEY'] = SECRET_KEY_FROM_ENV
 
 # Helpers
 def allowed_file(filename):
@@ -49,7 +49,7 @@ def token_required(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
-# Upload image - CHANGED TO USE SUPABASE STORAGE
+# Upload image
 @app.route('/api/upload', methods=['POST'])
 @token_required
 def upload_file(current_user):
@@ -61,73 +61,93 @@ def upload_file(current_user):
         return jsonify({'error': 'No selected file'}), 400
 
     if file and allowed_file(file.filename):
-        # Create a unique filename to avoid overwrites
         filename = secure_filename(file.filename)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
         unique_filename = timestamp + filename
-        
-        # Read file bytes for upload
         file_bytes = file.read()
-        file.seek(0) # Reset pointer
+        file.seek(0)
 
         try:
-            # Upload to Supabase Storage
-            # The path inside the bucket will be public/{unique_filename}
             supabase.storage.from_('photos').upload(
                 file=file_bytes,
                 path=f'public/{unique_filename}',
                 file_options={"content-type": file.mimetype}
             )
-            
-            # Get the public URL
             public_url_response = supabase.storage.from_('photos').get_public_url(f'public/{unique_filename}')
             public_url = public_url_response
 
-            # Prepare metadata to save in the database table
             metadata = {
                 'filename': unique_filename,
                 'location': request.form.get('location', ''),
                 'bio': request.form.get('bio', ''),
+                'paragraph': request.form.get('paragraph', ''), # New field
                 'upload_date': datetime.now().isoformat(),
                 'uploaded_by': current_user.get('username', 'unknown'),
-                'image_url': public_url # Store the public URL
+                'image_url': public_url
             }
 
-            # Insert metadata into the 'images' table
             supabase.table("images").insert(metadata).execute()
 
             return jsonify({
                 'message': 'File uploaded successfully',
                 'metadata': metadata
             }), 200
-
         except Exception as e:
             return jsonify({'error': f'Storage upload failed: {str(e)}'}), 500
 
     return jsonify({'error': 'Invalid file type'}), 400
 
-# Get images - No changes needed, but it now returns the image_url
+# Get images
 @app.route('/api/images', methods=['GET'])
 def get_images():
     location = request.args.get('location')
-    query = supabase.table('images').select('*').order('upload_date', desc=True) # Order by most recent
-    
+    query = supabase.table('images').select('*').order('upload_date', desc=True)
+
     if location:
         result = query.eq('location', location).execute()
     else:
         result = query.execute()
-        
+
     return jsonify(result.data), 200
 
-# THIS ROUTE IS NO LONGER NEEDED because images are served from Supabase
-# @app.route('/api/image/<filename>', methods=['GET'])
-# def get_image(filename):
-#     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+# --- NEW: Edit an image's metadata ---
+@app.route('/api/edit/<int:image_id>', methods=['POST'])
+@token_required
+def edit_image(current_user, image_id):
+    data = request.get_json()
+    bio = data.get('bio')
+    paragraph = data.get('paragraph')
 
-# Home
-@app.route('/')
-def index():
-    return jsonify({'message': 'Server is running'}), 200
+    if not bio or not paragraph:
+        return jsonify({'error': 'Bio and paragraph are required'}), 400
+
+    try:
+        supabase.table('images').update({
+            'bio': bio,
+            'paragraph': paragraph
+        }).eq('id', image_id).execute()
+        return jsonify({'message': 'Image updated successfully'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# --- NEW: Delete an image and its metadata ---
+@app.route('/api/delete/<int:image_id>', methods=['DELETE'])
+@token_required
+def delete_image(current_user, image_id):
+    try:
+        # First, get the filename to delete from storage
+        image_to_delete = supabase.table('images').select('filename').eq('id', image_id).single().execute()
+        filename = image_to_delete.data['filename']
+
+        # Delete from Supabase Storage
+        supabase.storage.from_('photos').remove([f'public/{filename}'])
+
+        # Delete from Supabase database
+        supabase.table('images').delete().eq('id', image_id).execute()
+        
+        return jsonify({'message': 'Image deleted successfully'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # Login with Supabase
 @app.route('/api/login', methods=['POST'])
@@ -148,5 +168,4 @@ def create_app():
     return app
 
 if __name__ == '__main__':
-    # For local development, you might need to set a port
     app.run(port=int(os.environ.get("PORT", 5000)), debug=True)
