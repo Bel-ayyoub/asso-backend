@@ -5,7 +5,8 @@ import jwt
 from functools import wraps
 from dotenv import load_dotenv
 from supabase import create_client, Client
-import base64
+import os
+from werkzeug.utils import secure_filename
 
 # Load environment variables
 load_dotenv()
@@ -16,7 +17,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Flask config
 app = Flask(__name__)
 CORS(app)
-app.config['SECRET_KEY'] = os.getenv("SECRET_KEY")
+app.config['SECRET_KEY'] = os.getenv("SECRET_KEY", "your-secret-key")
 
 # Helpers
 def allowed_file(filename):
@@ -65,12 +66,17 @@ def upload_file(current_user):
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
         filename = timestamp + secure_filename(file.filename)
         
-        # Upload to Supabase Storage
+        # Read file bytes
         file_bytes = file.read()
-        supabase.storage.from("photos").upload(filename, file_bytes)
         
+        # Upload to Supabase Storage
+        res = supabase.storage.from_("photos").upload(file=file_bytes, path=filename, file_options={"content-type": file.mimetype})
+        
+        if res.status_code != 200:
+            return jsonify({'error': 'Failed to upload to storage'}), 500
+
         # Get public URL
-        image_url = supabase.storage.from("photos").get_public_url(filename)
+        image_url = supabase.storage.from_("photos").get_public_url(filename)
 
         # Save metadata to database
         metadata = {
