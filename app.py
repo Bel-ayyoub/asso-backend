@@ -1,12 +1,11 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
-from werkzeug.utils import secure_filename
 from datetime import datetime
 import jwt
 from functools import wraps
 from dotenv import load_dotenv
 from supabase import create_client, Client
+import base64
 
 # Load environment variables
 load_dotenv()
@@ -17,12 +16,11 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Flask config
 app = Flask(__name__)
 CORS(app)
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+app.config['SECRET_KEY'] = os.getenv("SECRET_KEY", "your-secret-key")
 
 # Helpers
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg', 'gif'}
 
 # Auth token
 def token_required(f):
@@ -48,7 +46,7 @@ def token_required(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
-# Upload image to Supabase storage bucket 'photos'
+# Upload image to Supabase Storage
 @app.route('/api/upload', methods=['POST'])
 @token_required
 def upload_file(current_user):
@@ -59,30 +57,25 @@ def upload_file(current_user):
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
 
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Invalid file type'}), 400
+
+    try:
+        # Generate unique filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_')
-        final_filename = f"{timestamp}{filename}"
-        path_in_bucket = f"images/{final_filename}"
+        filename = timestamp + secure_filename(file.filename)
+        
+        # Upload to Supabase Storage
         file_bytes = file.read()
+        supabase.storage.from("photos").upload(filename, file_bytes)
+        
+        # Get public URL
+        image_url = supabase.storage.from("photos").get_public_url(filename)
 
-        upload_response = supabase.storage.from_('photos').upload(
-            path=path_in_bucket,
-            file=file_bytes,
-            file_options={
-                "content-type": file.mimetype,
-                "upsert": True
-            }
-        )
-
-        if upload_response.get('error'):
-            return jsonify({'error': 'Upload to Supabase failed'}), 500
-
-        public_url = supabase.storage.from_('photos').get_public_url(path_in_bucket)
-
+        # Save metadata to database
         metadata = {
-            'filename': final_filename,
-            'url': public_url,
+            'filename': filename,
+            'image_url': image_url,
             'location': request.form.get('location', ''),
             'bio': request.form.get('bio', ''),
             'upload_date': datetime.now().isoformat(),
@@ -91,9 +84,13 @@ def upload_file(current_user):
 
         supabase.table("images").insert(metadata).execute()
 
-        return jsonify({'message': 'Upload successful', 'metadata': metadata}), 200
+        return jsonify({
+            'message': 'File uploaded successfully',
+            'metadata': metadata
+        }), 200
 
-    return jsonify({'error': 'Invalid file type'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # Get images
 @app.route('/api/images', methods=['GET'])
@@ -105,7 +102,7 @@ def get_images():
         result = supabase.table('images').select('*').execute()
     return jsonify(result.data), 200
 
-# Login endpoint
+# Login with Supabase
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -118,12 +115,7 @@ def login():
         token = jwt.encode({'username': username}, app.config['SECRET_KEY'], algorithm='HS256')
         return jsonify({'token': token}), 200
     else:
-        return jsonify({'message': 'اسم المستخدم أو كلمة المرور غير صحيحة'}), 401
-
-# Root
-@app.route('/')
-def index():
-    return jsonify({'message': 'Server is running'}), 200
+        return jsonify({'message': 'Invalid credentials'}), 401
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
