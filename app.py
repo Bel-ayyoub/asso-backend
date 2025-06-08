@@ -73,14 +73,14 @@ def upload_file(current_user):
         try:
             # Upload to Supabase Storage
             # The path inside the bucket will be public/{unique_filename}
-            supabase.storage.from_('images').upload(
+            supabase.storage.from_('photos').upload(
                 file=file_bytes,
                 path=f'public/{unique_filename}',
                 file_options={"content-type": file.mimetype}
             )
             
             # Get the public URL
-            public_url_response = supabase.storage.from_('images').get_public_url(f'public/{unique_filename}')
+            public_url_response = supabase.storage.from_('photos').get_public_url(f'public/{unique_filename}')
             public_url = public_url_response
 
             # Prepare metadata to save in the database table
