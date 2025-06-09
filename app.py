@@ -35,15 +35,13 @@ def token_required(f):
         if not token:
             return jsonify({'message': 'Token is missing'}), 401
         try:
-            # Just decode to validate. No need to pass the user data.
             jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
         except:
             return jsonify({'message': 'Token is invalid'}), 401
-        # Pass the original arguments without adding 'current_user'
         return f(*args, **kwargs)
     return decorated
 
-# Upload image - REMOVED the 'current_user' argument that caused the crash
+# Upload image
 @app.route('/api/upload', methods=['POST'])
 @token_required
 def upload_file():
@@ -59,7 +57,6 @@ def upload_file():
         try:
             supabase.storage.from_('photos').upload(file=file_bytes, path=f'public/{unique_filename}', file_options={"content-type": file.mimetype})
             public_url = supabase.storage.from_('photos').get_public_url(f'public/{unique_filename}')
-            
             metadata = {
                 'filename': unique_filename,
                 'location': request.form.get('location', ''),
@@ -67,17 +64,14 @@ def upload_file():
                 'paragraph': request.form.get('paragraph', ''),
                 'upload_date': datetime.now().isoformat(),
                 'image_url': public_url
-                # Removed 'uploaded_by' to fix the crash and simplify
             }
             supabase.table("images").insert(metadata).execute()
             return jsonify({'message': 'File uploaded successfully'}), 200
         except Exception as e:
-            # Return a proper JSON error if Supabase fails
-            return jsonify({'error': f'Storage or DB upload failed: {str(e)}'}), 500
+            return jsonify({'error': f'Upload failed: {str(e)}'}), 500
     return jsonify({'error': 'Invalid file type'}), 400
 
-# Other routes (no changes needed for them)
-
+# Get images
 @app.route('/api/images', methods=['GET'])
 def get_images():
     query = supabase.table('images').select('*').order('upload_date', desc=True)
@@ -88,12 +82,18 @@ def get_images():
         result = query.execute()
     return jsonify(result.data), 200
 
+# ===================================================================
+# THE FIX IS HERE: The route now accepts a <string> instead of <int>
+# ===================================================================
 @app.route('/api/delete/<string:image_id>', methods=['DELETE'])
 @token_required
 def delete_file(image_id):
     try:
+        # Now we use the image_id string to find the record
         image_record_response = supabase.table('images').select('filename').eq('id', image_id).execute()
-        if not image_record_response.data: return jsonify({'error': 'Image record not found'}), 404
+        if not image_record_response.data:
+            return jsonify({'error': 'Image record not found in database'}), 404
+        
         filename = image_record_response.data[0]['filename']
         supabase.storage.from_('photos').remove([f'public/{filename}'])
         supabase.table('images').delete().eq('id', image_id).execute()
@@ -101,6 +101,7 @@ def delete_file(image_id):
     except Exception as e:
         return jsonify({'error': f'Deletion process failed: {str(e)}'}), 500
 
+# Login route
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
